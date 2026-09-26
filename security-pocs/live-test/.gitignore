@@ -1,0 +1,4 @@
+node_modules
+.next
+.internal-port
+*.log

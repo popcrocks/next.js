@@ -7,6 +7,8 @@ Two kinds:
 - **Runnable now** — execute the *actual shipped code* in isolation (no Next.js build needed). Deterministic.
 - **Repro recipe** — server-level findings that need a running app; exact files + commands are given (this checkout has no `node_modules`/build, so they aren't executed here).
 
+> **Want to run H7 against a real Next server on your own machine?** See [`live-test/`](./live-test/) — a complete, localhost-only Next.js app (`/api/og?img=<url>`) + an internal SSRF target + a one-command attack script that prints a reach/exfil/guard verdict.
+
 ---
 
 ## Runnable now (execute shipped code)
