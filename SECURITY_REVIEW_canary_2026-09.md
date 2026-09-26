@@ -290,6 +290,26 @@ No remote RCE; no request-reachable dependency vuln; the cross-user disclosure i
 
 ---
 
+## Round 8 — native image-decode surface (the only runtime path to memory-unsafe code)
+
+Follow-up to H1/H4/H7, pushing specifically on "malicious image → RCE". **Conclusion: the only runtime code path from an HTTP request to memory-unsafe native code is the image decoder (`sharp`/libvips). Whether it is exploitable is gated on the *deployed* codec versions, not on Next's own code. No novel memory-corruption bug was found in the current stack; the current pinned stack is patched.**
+
+### Reachability (verified in source)
+- **`/_next/image` (built-in) decodes attacker-influenceable remote bytes with native `sharp` as the *sole* decoder** — there is **no WASM/squoosh fallback at HEAD** (removed; if `sharp` is absent the image is passed through un-decoded). Chain: `next-server.ts:781-796` → `image-optimizer.ts` `imageOptimizer` → `image-optimizer/transform.ts:157-191` `getSharp()` → `sharp(buffer,{limitInputPixels,…}).timeout().rotate().resize().<encode>().toBuffer()`. Fetched bytes hit libvips at `transform.ts:158`; decode fires at `:191`.
+- **Formats that actually reach libvips:** JPEG, PNG (static), WebP (static), **AVIF (always, via the libheif/dav1d/libde265 loader — the highest-CVE family)**, GIF (static), TIFF. The optimizer applies real guards: a libvips **loader allowlist** (`transform.ts:97-108`, only 7 loaders unblocked), `limitInputPixels: 268_402_689` (`config-shared.ts:2398`), a **7 s decode timeout** (`transform.ts:162`), a **50 MB** response cap (`image-config.ts:164`), and animated WebP/PNG/GIF are bypassed (no `{animated:true}`).
+- **`next/og` is the *less-guarded* twin.** When `sharp` is importable, `@vercel/og` rasterizes the satori SVG via `sharp(svg).resize().png()` (`index.node.js:20510-20511`, `getSharp()` `:20545`), decoding the attacker's fetched raster (embedded as a data URI, `:17297`) through libvips — but with **no loader allowlist, no `limitInputPixels`, and no `.timeout()`**. So on a `sharp`-enabled deployment, the H7 SSRF fetch is also a native-decode delivery vector with fewer bounds than `/_next/image`.
+- No other runtime native module processes request bytes (the SWC/Turbopack native binding is build-time; the `*.node` infixes in the server are runtime-variant *source* files, not addons — verified).
+
+### Severity is version-gated (the honest ceiling)
+- The **default backend for `next/og` is `resvg-wasm`** — a WebAssembly sandbox, so a decoder bug there is DoS, not host RCE. Native code is reached only when `sharp` is installed (Vercel always; self-host commonly, since `sharp` is also what the optimizer needs).
+- **Next pins `sharp` as an *optional* dep at `^0.35.4`** (`packages/next/package.json`), but the *deployed* version is whatever the app's lockfile carries. Current `sharp` 0.35.4 bundles libvips 8.18.6 / libwebp 1.6.0 / libaom 3.15.0 / libtiff 4.7.2 / libheif 1.23.2 — all **patched**. A mutational fuzz of the exact optimizer decode ops against this stack ran **1250+ cases with 0 crashes / 0 hangs** (all inputs either decoded or were cleanly rejected) — consistent with a current, OSS-Fuzz-covered stack. No fresh 0-day was found, and none is claimed.
+- **The exposure is deployments pinning an old `sharp`.** `sharp ≤ 0.32.5` bundles **libwebp 1.3.1**, vulnerable to **CVE-2023-4863** (critical, in-the-wild heap overflow in the VP8L/lossless WebP decoder; fixed in libwebp 1.3.2 / `sharp` 0.32.6). Confirmed here only to the extent of loading `sharp@0.32.5` and reading its bundled `libwebp: "1.3.1"`; **no exploit or crash input was developed** — reproducing/weaponizing a memory-corruption CVE is out of scope for this review. On such a deployment, `/_next/image` (unauth, built-in) and a `next/og` route turn that decoder CVE into an unauthenticated remote trigger.
+
+### Net / fixes
+No remote RCE against a current, normally-deployed app (Next's own runtime is JS + a WASM sandbox → memory-safe; the native decoder is patched at the pinned version). The realistic RCE story is: **an app running an outdated `sharp`/libvips is remotely reachable through the image endpoints.** Defenses: (1) keep `sharp` current and set a version *floor* (`sharp ≥ 0.33`, ideally track libvips) rather than only a caret on an optional dep; (2) apply the optimizer's guards to the `next/og` path too — a libvips loader allowlist, `limitInputPixels`, and a decode timeout; (3) the SSRF fixes for H1/H7 also shrink the delivery surface (fewer attacker-chosen upstreams reach the decoder).
+
+---
+
 # Master findings inventory (all rounds)
 
 Consolidated, deduplicated view of everything verified across Rounds 1-7. Severities are as-verified; "confidence" reflects that this is a source + isolated-harness audit with **no running Next.js** (several key items were proven by executing vendored bundles/decoders/regexes in isolation, noted inline).
