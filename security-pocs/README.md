@@ -11,7 +11,7 @@ Two kinds:
 
 ## Runnable now (execute shipped code)
 
-### `og-ssrf-guard-bypass.mjs` — H7, `next/og` SSRF guard bypass (High)
+### `og-ssrf-e2e.mjs` — H7 (END-TO-END: real server-side fetch fired) / `og-ssrf-guard-bypass.mjs` — H7, `next/og` SSRF guard bypass (High)
 Runs the SHIPPED `next/og` SSRF guard (`Ms`/`Xu`, extracted verbatim from `packages/next/src/compiled/@vercel/og/index.node.js` into `_og_guard_extracted.mjs`).
 
 ```bash
