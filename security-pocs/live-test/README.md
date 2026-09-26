@@ -6,8 +6,13 @@ Everything targets `127.0.0.1`. Nothing external is contacted. To point at real 
 
 ## What's here
 - `app/api/og/route.tsx` — a normal dynamic-OG route (`ImageResponse` rendering a request-supplied `?img=` URL). The only app-side precondition for the bug.
-- `internal-server.mjs` — a loopback service standing in for cloud metadata / an internal panel. Returns a per-path "secret" image and logs every hit.
-- `attack.mjs` — sends the unauthenticated request to your running Next server and prints a verdict (reach + content exfil + guard-active control).
+- `internal-server.mjs` — a loopback service standing in for cloud metadata / an internal panel. Endpoints: `/latest/meta-data/*` (per-path "secret" image), `/redirect` (302 to its own **literal-IP** URL), `/hang` (headers then never finishes), `/bomb` (tiny file, huge declared dimensions). Logs every hit.
+- `attack.mjs` — sends the unauthenticated requests to your running Next server and prints a verdict. Covers the plain SSRF + content-exfil + guard-active control, the **redirect→literal-IP bypass**, and (opt-in with `DOS=1`) the **DoS** probes.
+
+It demonstrates three things, all executed against the real server:
+1. **SSRF + content exfil** — a guard-allowed hostname (`127.0.0.1.nip.io`) reaches the internal service and its image bytes come back.
+2. **Redirect bypass to a literal blocked IP** — a guard-allowed host that `302`s to `http://127.0.0.1:PORT/...` (a literal IP the guard rejects when given directly) is followed anyway, because `next/og` vets only the initial URL. In cloud this is a clean attacker domain → `302` → `http://169.254.169.254/...` with **no attacker DNS needed**.
+3. **DoS** (opt-in) — `next/og` sets no fetch timeout and no response-size cap: `/hang` pins a server worker indefinitely, and `/bomb` (a ~46 KB file declaring 4000×4000) forces a ~64 MB decode. Both are unauthenticated.
 
 ## Requirements
 - Node 18+ (uses the built-in global `fetch`).
@@ -26,17 +31,23 @@ npm run internal            # listens on 127.0.0.1:8079
 npm run dev                 # http://localhost:3000   (or: npm run build && npm run start)
 
 # terminal 3 — the attack
-npm run attack
+npm run attack             # SSRF + content-exfil + redirect bypass
+# DOS=1 npm run attack     # ALSO the DoS probes (hang a worker / spike memory) — see warning below
 ```
 
 ## Expected result
-`attack.mjs` prints:
+`attack.mjs` prints (DoS lines only with `DOS=1`):
 ```
 SSRF reach (og fetched the internal host)      : YES
 Internal CONTENT exfiltrated to the attacker   : YES — RED vs BLUE runs returned different PNGs, ...
 Guard blocks the literal-IP control            : YES (HTTP 500) — the guard is active, and the hostname bypasses it
+ESCALATION: redirect -> LITERAL IP is followed : YES — a guard-allowed host that 302s to the blocked literal IP is reached
+ESCALATION: no fetch timeout (worker hang)     : YES — server had not responded when the client gave up at 8s
+ESCALATION: tiny-file -> huge-decode           : observed (HTTP 200 in ~1s) — watch server memory; raise BOMB_DIM to amplify
 ```
-and the **terminal 1** (internal service) log shows the Next server reaching `/latest/meta-data/red` and `/blue` — but **not** the literal-IP control. That is the SSRF: your public endpoint fetched an internal-only address chosen by the (unauthenticated) request.
+and the **terminal 1** (internal service) log shows the Next server reaching `/latest/meta-data/red` and `/blue`, then a `302 redirect to LITERAL IP` immediately followed by a hit on that literal `/iam/security-credentials/admin` — but **not** the direct literal-IP control. That is the SSRF and the redirect bypass: your public endpoint fetched internal-only addresses chosen by the (unauthenticated) request.
+
+> **DoS warning:** `DOS=1` intentionally degrades the server you're running — `/hang` ties up a worker until you restart it, and `/bomb` forces a large allocation (raise `BOMB_DIM` on the internal server, e.g. `BOMB_DIM=20000`, to amplify). Only run it against your own local server.
 
 ### Or with curl
 ```bash

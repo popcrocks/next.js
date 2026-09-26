@@ -87,3 +87,13 @@ Two real HTTP servers: a **public** Next-style OG endpoint (`GET /api/og?img=<ur
 node og-ssrf-chain.mjs
 ```
 Proves three things at once: **SSRF reach** (public→internal), the **guard is active but bypassed** (a literal-IP control returns 500 "SSRF protection" and does not reach internal), and **content exfiltration** (A/B: a RED vs BLUE internal secret yields different attacker-received PNGs → the internal resource's bytes flow back to the caller). Loopback-only; point the host at `169.254.169.254.nip.io` and it targets real cloud metadata (not done here).
+
+### `og-escalation-chain.mjs` — H7 escalations (executed)
+Executes the vendored bundle to demonstrate the two escalations beyond the plain hostname bypass:
+```bash
+node og-escalation-chain.mjs
+```
+- **Redirect → literal blocked IP:** a guard-allowed host that `302`s to a **literal** loopback IP is followed and its bytes returned, while the same literal IP given directly throws "SSRF protection". No attacker DNS needed; reaches literal metadata IPs.
+- **DoS:** no fetch timeout (a hung upstream leaves the render unresolved after 6 s vs ~30 ms normal) and decode amplification (a ~46 KB PNG declaring 4000×4000 → ~64 MB decode, ~115 MB RSS). Backed by the resvg-wasm sandbox by default; native `libvips`/`librsvg` if the app installs `sharp`.
+
+For a version you run against a real `next dev` server, see [`live-test/`](./live-test/) (`npm run attack`, or `DOS=1 npm run attack`).
