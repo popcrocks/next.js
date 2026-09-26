@@ -78,3 +78,10 @@ curl http://localhost:3000/           # now serves the [slug]-for-'index' render
 ---
 
 *These reproduce findings in a code review; validate against the current upstream before reporting. Localhost-only.*
+
+### `og-ssrf-chain.mjs` — H7, full end-to-end SSRF chain (executed)
+Two real HTTP servers: a **public** Next-style OG endpoint (`GET /api/og?img=<url>` → `ImageResponse`, using the shipped bundle) and an **internal-only** loopback service. An unauthenticated request to the public endpoint with an attacker-chosen `img` host (`127.0.0.1.nip.io`, guard-allowed) makes the server reach the internal service and return its content.
+```bash
+node og-ssrf-chain.mjs
+```
+Proves three things at once: **SSRF reach** (public→internal), the **guard is active but bypassed** (a literal-IP control returns 500 "SSRF protection" and does not reach internal), and **content exfiltration** (A/B: a RED vs BLUE internal secret yields different attacker-received PNGs → the internal resource's bytes flow back to the caller). Loopback-only; point the host at `169.254.169.254.nip.io` and it targets real cloud metadata (not done here).
