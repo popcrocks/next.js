@@ -287,3 +287,36 @@ Three hunters. **No remote RCE.** One new confirmed **Medium** (ReDoS), and two 
 
 ### Round 7 net
 No remote RCE; no request-reachable dependency vuln; the cross-user disclosure invariant holds. The one new issue is an unauthenticated ReDoS DoS (**M‑i**), which the review window slightly worsened.
+
+---
+
+# Master findings inventory (all rounds)
+
+Consolidated, deduplicated view of everything verified across Rounds 1-7. Severities are as-verified; "confidence" reflects that this is a source + isolated-harness audit with **no running Next.js** (several key items were proven by executing vendored bundles/decoders/regexes in isolation, noted inline).
+
+## RCE verdict
+**No remote RCE against a normally-deployed app exists at HEAD.** Every class that could produce one was examined and closed, several with executed proofs: RSC/Flight deserialization (all 20 decode sites × webpack/turbopack × node/edge), Server-Action bound-arg encryption (PoC), prototype pollution, cache/RDC deserialization, `eval`/`vm`/`child_process` sinks, the edge sandbox, request-smuggling core path, path traversal, and request-reachable dependency versions. The only code-execution paths require **running an attacker's committed files** (`next start` on a committed `.next/`; `next build --webpack` on a committed `.env`) or a **version-dependent `sharp`/libvips CVE** via `/_next/image`.
+
+## High
+| ID | Title | Where | Notes |
+|---|---|---|---|
+| H1 | `/_next/image` DNS-rebinding SSRF (guard resolves DNS, fetch re-resolves — TOCTOU) | `server/image-optimizer.ts:531-550` | config-gated (broad `remotePatterns`) |
+| H7 | `next/og` `ImageResponse` SSRF — guard bypassable by DNS (`nip.io`) + 302 redirect; no timeout/size cap | vendored `@vercel/og` `index.node.js:17349` | **bundle-proven**; framework guard incomplete |
+| H2 | `/index`→`/` home-page cache poisoning | `route-modules/.../route-module.ts:1073` | self-hosted; root dynamic route + ISR home |
+| H3 | `dynamicParams=false` POST admission bypass (+ RSC exfil + cache-bypass DoS) | `app-page-runtime.ts:1737`, `action-handler.ts:682` | no experimental flag needed — broadest |
+| H4 | `/_next/image` pixel-flood OOM/CPU DoS (no concurrency cap, 268 MP limit) | `image-optimizer/transform.ts`, `config-shared.ts:2398` | unauth |
+| H6 | `next start` executes a committed `.next/` (incl. `*_client-reference-manifest.js` via `vm.runInNewContext`) | `load-manifest.external.ts:124`, `instrumentation-globals.external.ts:74` | untrusted-repo model (RCE when running attacker build output) |
+
+## Medium
+`next upgrade --ai` trusts any open PR (stops security upgrades + prompt-injects a privileged agent) · absolute-form open redirect (M‑d) · `/_next/image` open-proxy on unre-validated redirect (M‑a) · adapter NFT copy write-escape, build-time (M‑b) · rewrite-proxy body-truncation desync on shared keep-alive pool (M‑e) · dev inspector force-open via cross-site navigation → RCE on shared/cloud hosts (M‑c) · MCP dev server no DNS-rebind/auth (M‑f) · dev endpoints unauthenticated via `blockCrossSiteDEV` no-`Origin` gap: `restart_dev` DoS, HMR terminal-escape injection, launch-editor (M‑g) · committed `.env`→build `require()` (M‑h) · bot-`User-Agent` ReDoS DoS (M‑i) · rewrite-proxy has no SSRF guard (framework Low / affected-app High).
+
+## Low
+`x-action-forwarded` forgeable header · dev `/__nextjs_source-map` read-oracle & `launch-editor` CSRF · draft-mode cross-request cache-join (transient) · `next-codemod` `shell:true` · agent-feedback telemetry opt-out gap · `distDir` delete-your-source bypass (case/symlink, misconfig) · `turbopackAdditionalRoots` `__dirname` tracing of unrelated project files · revalidate-token read-side empty-secret asymmetry (converged, 2 agents) · `TEST_ROUTE` ReDoS (minimal-mode) · image single-`*` over-matches subdomain depth · image `decodeURIComponent` 500.
+
+## Confirmed clean (no vulnerability; several executed-proof)
+CVE-2025-29927 middleware bypass (header + all readers removed) · Flight/RSC deserialization RCE (all runtimes) · Server-Action CSRF + bound-arg encryption (PoC) · prototype pollution (no primitive) · cache/RDC deserialization (gated maps) · dynamic-exec sinks (parameterized) · edge sandbox (runs only trusted code) · request smuggling in the core render path · request-time path traversal (`_next/static`/`_next/data`) · SSR/inline-script XSS · client-side DOM XSS/open-redirect/proto-pollution · rewrite-to-external framework-direct SSRF (`x-middleware-rewrite` stripped, host `encodeURIComponent`-compiled) · fetch data-cache cross-user partitioning · on-demand revalidation gating · PPR/`cacheComponents` cross-user disclosure invariant · request-reachable dependency versions · `next/og` SVG serialization (Round-1 hardening complete) · `next/font` build-time SSRF · React Flight-reply decoder (the 3 in-window React upgrades *hardened* it).
+
+## Cross-cutting themes
+1. **SSRF is the most consistent real weakness** — two High (image DNS-rebinding H1, `next/og` guard bypass H7) plus the open-proxy-on-redirect and the unguarded rewrite proxy. The correct defense (`isPrivateIp` + DNS-resolve + `redirect:'manual'` + timeout + size cap) exists in `image-optimizer.ts` but isn't applied to `next/og` or the rewrite proxy.
+2. **"Running the framework on attacker files executes code"** — committed `.next/` (H6) and committed `.env` (M‑h), the latter rooted in `@next/env` merging `.env` wholesale with no internal-key allowlist. Relevant to CI/reviewers/agents that build untrusted repos.
+3. **Dev-server hardening** — `blockCrossSiteDEV` treats a no-`Origin` request as same-site, exposing side-effectful `/__nextjs_*` endpoints and the MCP server to non-browser LAN/shared-host callers (dev-only; inspector → RCE on shared hosts).
