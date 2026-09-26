@@ -310,6 +310,18 @@ No remote RCE against a current, normally-deployed app (Next's own runtime is JS
 
 ---
 
+## Round 9 — non-version-gated RCE re-hunt (Flight module map + all code-exec sinks)
+
+Targeted re-derivation of whether any RCE exists that does **not** depend on a deployed dependency version — i.e. a logic bug in Next's own code. **Verdict: none found; the class is structurally closed at HEAD.** Two independent deep sweeps plus source verification of every gate.
+
+- **Canonical Flight/Server-Action RCE (React2Shell / CVE‑2025‑55182 class): closed.** The attacker's action id (POST Flight body / `$ACTION_ID_` field) is only a *key* into the null‑proto server‑actions manifest; `createServerModuleMap` (`manifests-singleton.ts:344-412`) length‑gates the id (`mightBeServerReferenceId`, ==42), looks it up, and returns the **manifest's** `moduleId` (`:401-408`) — never the attacker string. Unknown id → `ActionNotFound`. Every decoder (`decodeReply`/`decodeAction`/`decodeFormState`, `use cache` arg+entry decode at `use-cache-wrapper.ts:1362,3835`, `encryption.ts`) is handed this same hardened map. Encrypted bound args are AES‑GCM‑gated (build‑time key) and must be `actionId`‑prefixed before any decode.
+- **Closest attacker-influenced deserialization — resume-data-cache — is doubly gated (verified in source).** A POST body can become `postponed` state → `inflateSync` + `JSON.parse` + Flight‑decode (`resume-data-cache.ts:280-326` → `use-cache-wrapper.ts:3835`). But the trigger headers (`next-resume`, `x-matched-path`, `x-next-resume-state-length`) are in `INTERNAL_HEADERS` (`server-ipc/utils.ts:42-54`) and stripped **unconditionally** at the router entry (`router-server.ts:326-332`, skipped only under the test‑only `NEXT_PRIVATE_TEST_HEADERS`), and the body‑read is additionally gated by `isAppPPREnabled && minimalMode && next-resume:1 && POST` (`base-server.ts:1106-1111`). Not externally reachable in a standard `next start`; even if reached (a minimalMode deployment whose fronting infra re‑injects the header) it uses the hardened Flight maps → cache‑poisoning, not code exec. The `JSON.parse` is pollution‑safe (entries become plain `Map` keys).
+- **No other sink reachable:** dynamic `require`/`import` resolve through the build manifest, not raw URL (`require.ts:59-134`, `route-module.ts:102-105`); `Next-Router-State-Tree` is size‑capped + superstruct‑validated (`parse-and-validate-flight-router-state.tsx`, no proto pollution); preview/draft data is JWT+AES gated (`try-get-preview-data.ts`); no request‑reachable `eval`/`new Function`/`vm.compileFunction`/`child_process`; only shallow `Object.assign` on the request path (no `Object.prototype` primitive).
+
+**Why this is the expected result:** Next's runtime is JS + a WASM sandbox (resvg/yoga) — memory‑safe — so a non‑gated RCE would have to be a logic bug that loads or evaluates attacker‑chosen code, and every such path is mediated by a manifest / allowlist / null‑proto lookup. The only memory‑unsafe code reachable from a request is the native image decoder, which is exactly why the sole remaining RCE is **version‑gated** (Round 8). Residual watch‑item (defense‑in‑depth, not a finding): in a `minimalMode` deployment the resume‑state path's safety partly rests on the fronting infra never forwarding a client‑supplied body as `postponed` without its own auth.
+
+---
+
 # Master findings inventory (all rounds)
 
 Consolidated, deduplicated view of everything verified across Rounds 1-7. Severities are as-verified; "confidence" reflects that this is a source + isolated-harness audit with **no running Next.js** (several key items were proven by executing vendored bundles/decoders/regexes in isolation, noted inline).
